@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PasteBox</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <h1>PasteBox</h1>
+    {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+    <form method="post" action="/paste">
+      <textarea name="content" rows="14" placeholder="Вставьте текст" autofocus></textarea>
+      <button type="submit">Сохранить</button>
+    </form>
+  </main>
+</body>
+</html>

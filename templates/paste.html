@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>PasteBox — {{.ID}}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <main>
+    <h1><a href="/">PasteBox</a></h1>
+    <pre>{{.Content}}</pre>
+    <p class="meta">{{.ID}} · {{.CreatedAt.Format "2006-01-02 15:04:05 MST"}}</p>
+  </main>
+</body>
+</html>
