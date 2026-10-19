@@ -26,3 +26,22 @@ jobs:
           echo "$DOCKERHUB_TOKEN" | docker login -u ristosha --password-stdin
           docker tag $IMAGE:build-${{ github.run_number }} $IMAGE:${{ github.ref_name }}
           docker push $IMAGE:${{ github.ref_name }}
+
+  deploy-stage:
+    needs: build
+    if: github.event_name == 'push' && github.ref_name == 'dev'
+    runs-on: [self-hosted, test]
+    env:
+      STAGE: devops@192.168.56.11
+      SSH_OPTS: -i /home/devops/.ssh/stage_deploy -o StrictHostKeyChecking=accept-new
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Copy compose file and migrations to stage
+        run: |
+          scp $SSH_OPTS deploy/docker-compose.yaml $STAGE:pastebox/docker-compose.yaml
+          scp $SSH_OPTS -r migrations $STAGE:pastebox/
+
+      - name: Deploy image to stage
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose pull && docker compose up -d'
