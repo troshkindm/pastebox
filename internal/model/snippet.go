@@ -10,6 +10,7 @@ type Snippet struct {
 	ID        string
 	Content   string
 	CreatedAt time.Time
+	ExpiresAt *time.Time // nil — хранится без ограничения срока
 }
 
 // Length возвращает число символов в тексте записи.

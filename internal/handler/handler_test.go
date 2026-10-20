@@ -18,28 +18,30 @@ import (
 
 // fakeStore — хранилище в памяти для модульных тестов обработчиков.
 type fakeStore struct {
-	snippets  map[string]model.Snippet
-	createErr error
-	creates   int
+	snippets    map[string]model.Snippet
+	createErr   error
+	creates     int
+	lastExpires *time.Time
 }
 
 func newFakeStore() *fakeStore {
 	return &fakeStore{snippets: map[string]model.Snippet{}}
 }
 
-func (f *fakeStore) Create(_ context.Context, content string) (string, error) {
+func (f *fakeStore) Create(_ context.Context, content string, expiresAt *time.Time) (string, error) {
 	if f.createErr != nil {
 		return "", f.createErr
 	}
 	f.creates++
+	f.lastExpires = expiresAt
 	id := fmt.Sprintf("00000000-0000-4000-8000-%012d", f.creates)
-	f.snippets[id] = model.Snippet{ID: id, Content: content, CreatedAt: time.Now()}
+	f.snippets[id] = model.Snippet{ID: id, Content: content, CreatedAt: time.Now(), ExpiresAt: expiresAt}
 	return id, nil
 }
 
 func (f *fakeStore) Get(_ context.Context, id string) (model.Snippet, error) {
 	s, ok := f.snippets[id]
-	if !ok {
+	if !ok || (s.ExpiresAt != nil && s.ExpiresAt.Before(time.Now())) {
 		return model.Snippet{}, repository.ErrNotFound
 	}
 	return s, nil
@@ -61,7 +63,10 @@ func do(h http.Handler, req *http.Request) *httptest.ResponseRecorder {
 }
 
 func postPaste(h http.Handler, content string) *httptest.ResponseRecorder {
-	form := url.Values{"content": {content}}
+	return postForm(h, url.Values{"content": {content}})
+}
+
+func postForm(h http.Handler, form url.Values) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(http.MethodPost, "/paste", strings.NewReader(form.Encode()))
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	return do(h, req)
@@ -124,7 +129,7 @@ func TestCreatePasteStoreError(t *testing.T) {
 
 func TestShowPasteExisting(t *testing.T) {
 	store := newFakeStore()
-	id, _ := store.Create(context.Background(), "saved text <b>")
+	id, _ := store.Create(context.Background(), "saved text <b>", nil)
 	h := newHandler(t, store)
 	rec := do(h, httptest.NewRequest(http.MethodGet, "/p/"+id, nil))
 
@@ -155,5 +160,48 @@ func TestShowPasteInvalidID(t *testing.T) {
 
 	if rec.Code != http.StatusNotFound {
 		t.Errorf("status: got %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+func TestCreatePasteWithTTL(t *testing.T) {
+	store := newFakeStore()
+	h := newHandler(t, store)
+	rec := postForm(h, url.Values{"content": {"temporary text"}, "ttl_hours": {"24"}})
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if store.lastExpires == nil {
+		t.Fatalf("expires_at is not set")
+	}
+	left := time.Until(*store.lastExpires)
+	if left < 23*time.Hour+59*time.Minute || left > 24*time.Hour {
+		t.Errorf("time to expiry: got %v, want about 24h", left)
+	}
+}
+
+func TestCreatePasteWithoutTTL(t *testing.T) {
+	store := newFakeStore()
+	h := newHandler(t, store)
+	rec := postForm(h, url.Values{"content": {"permanent text"}, "ttl_hours": {"0"}})
+
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("status: got %d, want %d", rec.Code, http.StatusSeeOther)
+	}
+	if store.lastExpires != nil {
+		t.Errorf("expires_at: got %v, want nil", store.lastExpires)
+	}
+}
+
+func TestCreatePasteInvalidTTL(t *testing.T) {
+	store := newFakeStore()
+	h := newHandler(t, store)
+	rec := postForm(h, url.Values{"content": {"text"}, "ttl_hours": {"abc"}})
+
+	if rec.Code != http.StatusBadRequest {
+		t.Errorf("status: got %d, want %d", rec.Code, http.StatusBadRequest)
+	}
+	if store.creates != 0 {
+		t.Errorf("record was created, want none")
 	}
 }
