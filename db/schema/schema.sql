@@ -33,3 +33,5 @@ ALTER TABLE ONLY public.schema_migrations
 ALTER TABLE ONLY public.snippets
     ADD CONSTRAINT snippets_pkey PRIMARY KEY (id);
 
+CREATE INDEX idx_snippets_expires_at ON public.snippets USING btree (expires_at) WHERE (expires_at IS NOT NULL);
+
