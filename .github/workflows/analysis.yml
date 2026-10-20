@@ -84,7 +84,7 @@ jobs:
       - name: Run gitleaks (any found secret fails the build)
         run: |
           mkdir -p report
-          gitleaks git --redact --report-format json --report-path report/gitleaks.json .
+          gitleaks git --redact --log-opts "HEAD" --report-format json --report-path report/gitleaks.json .
 
       - name: Upload report
         if: always()
