@@ -109,3 +109,45 @@ jobs:
 
       - name: Verify that TEST and STAGE schemas are identical
         run: diff -u /tmp/schema-test.sql /tmp/schema-stage-after.sql && echo "TEST and STAGE schemas are identical"
+
+  deploy-prod:
+    needs: publish
+    if: github.event_name == 'push' && github.ref_name == 'prod'
+    runs-on: [self-hosted, test]
+    env:
+      STAGE: devops@192.168.56.11
+      PROD: devops@192.168.56.12
+      STAGE_SSH: -i /home/devops/.ssh/stage_deploy -o StrictHostKeyChecking=accept-new
+      PROD_SSH: -i /home/devops/.ssh/prod_deploy -o StrictHostKeyChecking=accept-new
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Back up PROD database
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/backup-db.sh
+
+      - name: Dump STAGE schema
+        run: ssh $STAGE_SSH $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage.sql
+
+      - name: Dump PROD schema before deployment
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-prod-before.sql
+
+      - name: Compare PROD and STAGE schemas (before)
+        run: diff -u /tmp/schema-prod-before.sql /tmp/schema-stage.sql || echo "Schemas differ, PROD will be brought to the STAGE schema"
+
+      - name: Copy compose file and migrations to prod
+        run: |
+          scp $PROD_SSH deploy/docker-compose.yaml $PROD:pastebox/docker-compose.yaml
+          scp $PROD_SSH -r migrations $PROD:pastebox/
+
+      - name: Apply migrations to PROD database
+        run: ssh $PROD_SSH $PROD 'cd pastebox && docker compose up -d db && docker compose run --rm migrate'
+
+      - name: Deploy image to prod
+        run: ssh $PROD_SSH $PROD 'cd pastebox && docker compose pull app && docker compose up -d'
+
+      - name: Dump PROD schema after deployment
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-prod-after.sql
+
+      - name: Verify that PROD and STAGE schemas are identical
+        run: diff -u /tmp/schema-stage.sql /tmp/schema-prod-after.sql && echo "PROD and STAGE schemas are identical"
