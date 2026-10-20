@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"runtime"
 	"sync/atomic"
 	"testing"
@@ -17,7 +18,7 @@ import (
 var schemaCounter atomic.Int64
 
 // Pool подключается к тестовой PostgreSQL (переменная TEST_DATABASE_URL), создаёт для теста
-// отдельную схему, применяет в ней миграцию и возвращает пул, работающий в этой схеме.
+// отдельную схему, применяет в ней все миграции (*.up.sql) и возвращает пул, работающий в этой схеме.
 // Схемы изолируют тесты друг от друга: пакеты тестируются параллельно в одной базе.
 // Без переменной тест пропускается.
 func Pool(t *testing.T) *pgxpool.Pool {
@@ -56,13 +57,19 @@ func Pool(t *testing.T) *pgxpool.Pool {
 	})
 
 	_, thisFile, _, _ := runtime.Caller(0)
-	migration := filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations", "001_create_snippets.sql")
-	sql, err := os.ReadFile(migration)
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
+	files, err := filepath.Glob(filepath.Join(filepath.Dir(thisFile), "..", "..", "migrations", "*.up.sql"))
+	if err != nil || len(files) == 0 {
+		t.Fatalf("find migrations: %v (found %d)", err, len(files))
 	}
-	if _, err := pool.Exec(ctx, string(sql)); err != nil {
-		t.Fatalf("apply migration: %v", err)
+	sort.Strings(files)
+	for _, file := range files {
+		sql, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatalf("read migration %s: %v", file, err)
+		}
+		if _, err := pool.Exec(ctx, string(sql)); err != nil {
+			t.Fatalf("apply migration %s: %v", file, err)
+		}
 	}
 	return pool
 }
