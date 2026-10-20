@@ -12,6 +12,14 @@
     {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
     <form method="post" action="/paste">
       <textarea name="content" rows="14" placeholder="Вставьте текст" autofocus></textarea>
+      <label>Срок хранения
+        <select name="ttl_hours">
+          <option value="0">без ограничения</option>
+          <option value="1">1 час</option>
+          <option value="24">1 день</option>
+          <option value="168">7 дней</option>
+        </select>
+      </label>
       <button type="submit">Сохранить</button>
     </form>
   </main>

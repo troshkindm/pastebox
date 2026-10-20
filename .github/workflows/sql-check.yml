@@ -1,0 +1,25 @@
+name: SQL check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  SQUAWK_VERSION: v2.70.0
+
+jobs:
+  squawk:
+    name: sql-security (squawk)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Install squawk
+        run: |
+          curl -fsSL -o squawk https://github.com/sbdchd/squawk/releases/download/${SQUAWK_VERSION}/squawk-linux-x64
+          chmod +x squawk
+
+      - name: Check migrations (any finding fails the build)
+        run: ./squawk migrations/*.up.sql
