@@ -78,7 +78,7 @@ func (h *Handler) createPaste(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "internal server error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, "/p/"+id, http.StatusSeeOther)
+	http.Redirect(w, r, "/p/"+id, http.StatusFound)
 }
 
 func (h *Handler) showPaste(w http.ResponseWriter, r *http.Request) {
