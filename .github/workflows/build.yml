@@ -73,14 +73,39 @@ jobs:
     env:
       STAGE: devops@192.168.56.11
       SSH_OPTS: -i /home/devops/.ssh/stage_deploy -o StrictHostKeyChecking=accept-new
+      TEST_DIR: /home/devops/pastebox
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Apply migrations to TEST database
+        run: |
+          git -C $TEST_DIR fetch -q origin
+          git -C $TEST_DIR checkout -q --detach ${{ github.sha }}
+          cd $TEST_DIR && docker compose run --rm migrate
+
+      - name: Dump TEST schema
+        run: cd $TEST_DIR && sh scripts/dump-schema.sh > /tmp/schema-test.sql
+
+      - name: Dump STAGE schema before deployment
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage-before.sql
+
+      - name: Compare TEST and STAGE schemas (before)
+        run: diff -u /tmp/schema-stage-before.sql /tmp/schema-test.sql || echo "Schemas differ, STAGE will be brought to the TEST schema"
 
       - name: Copy compose file and migrations to stage
         run: |
           scp $SSH_OPTS deploy/docker-compose.yaml $STAGE:pastebox/docker-compose.yaml
           scp $SSH_OPTS -r migrations $STAGE:pastebox/
 
+      - name: Apply migrations to STAGE database
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose up -d db && docker compose run --rm migrate'
+
       - name: Deploy image to stage
-        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose pull && docker compose up -d'
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose pull app && docker compose up -d'
+
+      - name: Dump STAGE schema after deployment
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage-after.sql
+
+      - name: Verify that TEST and STAGE schemas are identical
+        run: diff -u /tmp/schema-test.sql /tmp/schema-stage-after.sql && echo "TEST and STAGE schemas are identical"
