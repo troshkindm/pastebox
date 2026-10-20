@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -20,7 +21,7 @@ var uuidRe = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[
 
 // SnippetStore — то, что обработчикам нужно от хранилища.
 type SnippetStore interface {
-	Create(ctx context.Context, content string) (string, error)
+	Create(ctx context.Context, content string, expiresAt *time.Time) (string, error)
 	Get(ctx context.Context, id string) (model.Snippet, error)
 }
 
@@ -72,7 +73,12 @@ func (h *Handler) createPaste(w http.ResponseWriter, r *http.Request) {
 		h.render(w, h.index, http.StatusBadRequest, indexData{Error: "Текст не должен быть пустым"})
 		return
 	}
-	id, err := h.store.Create(r.Context(), content)
+	expiresAt, ok := parseTTL(r.PostFormValue("ttl_hours"))
+	if !ok {
+		h.render(w, h.index, http.StatusBadRequest, indexData{Error: "Некорректный срок хранения"})
+		return
+	}
+	id, err := h.store.Create(r.Context(), content, expiresAt)
 	if err != nil {
 		log.Printf("create paste: %v", err)
 		http.Error(w, "internal server error", http.StatusInternalServerError)
@@ -106,4 +112,26 @@ func (h *Handler) render(w http.ResponseWriter, t *template.Template, status int
 	if err := t.Execute(w, data); err != nil {
 		log.Printf("render: %v", err)
 	}
+}
+
+// allowedTTL — допустимые значения срока хранения (часы) из формы; 0 — без ограничения.
+var allowedTTL = map[string]time.Duration{
+	"":    0,
+	"0":   0,
+	"1":   time.Hour,
+	"24":  24 * time.Hour,
+	"168": 7 * 24 * time.Hour,
+}
+
+// parseTTL переводит выбранный срок хранения в момент истечения записи.
+func parseTTL(value string) (*time.Time, bool) {
+	d, ok := allowedTTL[value]
+	if !ok {
+		return nil, false
+	}
+	if d == 0 {
+		return nil, true
+	}
+	t := time.Now().Add(d)
+	return &t, true
 }

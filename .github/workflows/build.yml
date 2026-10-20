@@ -18,30 +18,136 @@ jobs:
       - name: Docker build
         run: docker build -t $IMAGE:build-${{ github.run_number }} .
 
-      - name: Docker push (dev, prod only)
-        if: github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'prod')
+  test:
+    needs: build
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:18.6
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: pastebox_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d pastebox_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/pastebox_test?sslmode=disable
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Set up Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: "1.27.1"
+
+      - name: Run unit and integration tests
+        run: go test ./... -count=1 -v -cover
+
+  publish:
+    needs: test
+    if: github.event_name == 'push' && (github.ref_name == 'dev' || github.ref_name == 'prod')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Docker build
+        run: docker build -t $IMAGE:${{ github.ref_name }} .
+
+      - name: Docker push
         env:
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           echo "$DOCKERHUB_TOKEN" | docker login -u ristosha --password-stdin
-          docker tag $IMAGE:build-${{ github.run_number }} $IMAGE:${{ github.ref_name }}
           docker push $IMAGE:${{ github.ref_name }}
 
   deploy-stage:
-    needs: build
+    needs: publish
     if: github.event_name == 'push' && github.ref_name == 'dev'
     runs-on: [self-hosted, test]
     env:
       STAGE: devops@192.168.56.11
       SSH_OPTS: -i /home/devops/.ssh/stage_deploy -o StrictHostKeyChecking=accept-new
+      TEST_DIR: /home/devops/pastebox
     steps:
       - name: Checkout
         uses: actions/checkout@v7
+
+      - name: Apply migrations to TEST database
+        run: |
+          git -C $TEST_DIR fetch -q origin
+          git -C $TEST_DIR checkout -q --detach ${{ github.sha }}
+          cd $TEST_DIR && docker compose run --rm migrate
+
+      - name: Dump TEST schema
+        run: cd $TEST_DIR && sh scripts/dump-schema.sh > /tmp/schema-test.sql
+
+      - name: Dump STAGE schema before deployment
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage-before.sql
+
+      - name: Compare TEST and STAGE schemas (before)
+        run: diff -u /tmp/schema-stage-before.sql /tmp/schema-test.sql || echo "Schemas differ, STAGE will be brought to the TEST schema"
 
       - name: Copy compose file and migrations to stage
         run: |
           scp $SSH_OPTS deploy/docker-compose.yaml $STAGE:pastebox/docker-compose.yaml
           scp $SSH_OPTS -r migrations $STAGE:pastebox/
 
+      - name: Apply migrations to STAGE database
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose up -d db && docker compose run --rm migrate'
+
       - name: Deploy image to stage
-        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose pull && docker compose up -d'
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && docker compose pull app && docker compose up -d'
+
+      - name: Dump STAGE schema after deployment
+        run: ssh $SSH_OPTS $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage-after.sql
+
+      - name: Verify that TEST and STAGE schemas are identical
+        run: diff -u /tmp/schema-test.sql /tmp/schema-stage-after.sql && echo "TEST and STAGE schemas are identical"
+
+  deploy-prod:
+    needs: publish
+    if: github.event_name == 'push' && github.ref_name == 'prod'
+    runs-on: [self-hosted, test]
+    env:
+      STAGE: devops@192.168.56.11
+      PROD: devops@192.168.56.12
+      STAGE_SSH: -i /home/devops/.ssh/stage_deploy -o StrictHostKeyChecking=accept-new
+      PROD_SSH: -i /home/devops/.ssh/prod_deploy -o StrictHostKeyChecking=accept-new
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Back up PROD database
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/backup-db.sh
+
+      - name: Dump STAGE schema
+        run: ssh $STAGE_SSH $STAGE 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-stage.sql
+
+      - name: Dump PROD schema before deployment
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-prod-before.sql
+
+      - name: Compare PROD and STAGE schemas (before)
+        run: diff -u /tmp/schema-prod-before.sql /tmp/schema-stage.sql || echo "Schemas differ, PROD will be brought to the STAGE schema"
+
+      - name: Copy compose file and migrations to prod
+        run: |
+          scp $PROD_SSH deploy/docker-compose.yaml $PROD:pastebox/docker-compose.yaml
+          scp $PROD_SSH -r migrations $PROD:pastebox/
+
+      - name: Apply migrations to PROD database
+        run: ssh $PROD_SSH $PROD 'cd pastebox && docker compose up -d db && docker compose run --rm migrate'
+
+      - name: Deploy image to prod
+        run: ssh $PROD_SSH $PROD 'cd pastebox && docker compose pull app && docker compose up -d'
+
+      - name: Dump PROD schema after deployment
+        run: ssh $PROD_SSH $PROD 'cd pastebox && sh -s' < scripts/dump-schema.sh > /tmp/schema-prod-after.sql
+
+      - name: Verify that PROD and STAGE schemas are identical
+        run: diff -u /tmp/schema-stage.sql /tmp/schema-prod-after.sql && echo "PROD and STAGE schemas are identical"
